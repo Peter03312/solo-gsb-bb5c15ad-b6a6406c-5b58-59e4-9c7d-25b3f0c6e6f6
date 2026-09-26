@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import BoardDiagram, { partColor } from './BoardDiagram.jsx';
-import { cutStatus, markCut, undoCut } from './cutProgress.js';
+import { cutStatus, markCut, undoCut, pickableState } from './cutProgress.js';
 
 const SAMPLE_BOARD = { boardWidth: 2440, boardHeight: 1220, kerf: 3, boardPrice: 180 };
 
@@ -762,7 +762,7 @@ export default function App() {
     <div className="page">
       <header className="site-header">
         <h1>矩形板材下料 · 多订单拼版断头切割排料</h1>
-        <p>多张订单混合拼版：按订单与零件行顺序断头切割，可登记带唯一编号的临时余板库存（已开板放不下时先用余板、最后开标准新板），结果保留订单归属，按单取件并分摊材料费；方案生成后自动列出可回收余料清单，可勾选一键追加回余板库存；损坏件可勾选后生成独立补切方案；还可按订单预览撤单前后影响（原方案与表单不变）；也可把当前表单依次保存为多批做连续批次用料预演（首批余板为初始库存，余料按批回收入池，逐批给出新开标准板与累计材料费）；并可为已生成的方案做机台开料排程：在 2～3 台机台间分配整板加工（每板不可拆分、超单刀上限的机台不可分配），给出逐板机台、起止秒数与最短总完工时间；每张板的裁切图旁还有刀路执行记录：按前置关系逐刀标记完成或撤销（撤销连带后继刀），图上区分已完成、可执行与被阻塞的刀</p>
+        <p>多张订单混合拼版：按订单与零件行顺序断头切割，可登记带唯一编号的临时余板库存（已开板放不下时先用余板、最后开标准新板），结果保留订单归属，按单取件并分摊材料费；方案生成后自动列出可回收余料清单，可勾选一键追加回余板库存；损坏件可勾选后生成独立补切方案；还可按订单预览撤单前后影响（原方案与表单不变）；也可把当前表单依次保存为多批做连续批次用料预演（首批余板为初始库存，余料按批回收入池，逐批给出新开标准板与累计材料费）；并可为已生成的方案做机台开料排程：在 2～3 台机台间分配整板加工（每板不可拆分、超单刀上限的机台不可分配），给出逐板机台、起止秒数与最短总完工时间；每张板的裁切图旁还有刀路执行记录：按前置关系逐刀标记完成或撤销（撤销连带后继刀），图上区分已完成、可执行与被阻塞的刀；分单取件清单与刀路执行记录联动：零件的全部分离刀完成后标为「可取」，并显示尚缺刀序与每单可取件数 / 总件数</p>
       </header>
 
       <main className="layout">
@@ -997,6 +997,7 @@ export default function App() {
                 <li>连续批次用料预演：依次保存多批表单快照，首批余板为初始库存，余料按批回收入池供后续批次使用，逐批给出新开标准板数与累计材料费</li>
                 <li>机台开料排程：为已生成的方案在 2～3 台机台间分配整板加工，给出逐板机台、起止秒数与最短总完工时间，不改原排料结果</li>
                 <li>刀路执行记录：逐板图旁按刀序标记每刀完成（前置刀完成才可执行，分支可交错），撤销连带后继刀，图上区分已完成 / 可执行 / 被阻塞</li>
+                <li>可取件联动：分单取件清单随刀路执行记录即时更新——零件全部分离刀完成后标为「可取」，否则显示尚缺刀序，并给出每单可取件数 / 总件数</li>
                 <li>分时电费核算：填写机台运行功率、开工时刻与一天内电价时段（无重叠完整覆盖 00:00～24:00），逐板起止秒数换算实际时刻、跨边界 / 午夜分段计费，列出逐板与逐机台电费，改计价参数即可重新核算</li>
               </ul>
             </div>
@@ -1066,7 +1067,7 @@ export default function App() {
       </main>
 
       <footer className="site-footer">
-        断头切割规则：每一刀都贯穿当前所在矩形区域 · 允许零件旋转 90° · 按订单与零件行固定顺序排料 · 可回收余料取自各板最终空闲矩形（不含零件与锯缝），可追加为临时余板库存 · 补切仅重排所选损坏件，原方案不变 · 撤单预览按输入快照对比前后方案，表单与原方案不变 · 连续预演按批次快照逐批排料，余板池跨批流转，表单与单次方案不变 · 机台排程按输入快照重算同一方案，在 2～3 台机台间分配整板加工（超单刀上限的机台不可分配），同一机台按板号顺序连续加工，取全部板完成时间最小的分配，原排料结果不变 · 分时电费核算沿用同一排程，每板起止秒数按机台开工时刻换算实际时刻，跨电价边界或午夜按日循环拆分（分段费用 = 功率 × 加工秒数 ÷ 3600 × 电价，逐板四舍五入到分再汇总），修改计价参数只重新核算、不改原排料与排程 · 刀路执行记录按未舍入几何回放矩形切分得到每刀直接前置（所切矩形的产生刀，初始整板无前置），仅当前置刀已完成才可标记完成，不同分支可交错执行，撤销一刀连带撤销其已完成的所有后继刀；记录仅存当前页面并绑定生成方案，重新生成方案即清空，不影响落位、分摊与排程
+        断头切割规则：每一刀都贯穿当前所在矩形区域 · 允许零件旋转 90° · 按订单与零件行固定顺序排料 · 可回收余料取自各板最终空闲矩形（不含零件与锯缝），可追加为临时余板库存 · 补切仅重排所选损坏件，原方案不变 · 撤单预览按输入快照对比前后方案，表单与原方案不变 · 连续预演按批次快照逐批排料，余板池跨批流转，表单与单次方案不变 · 机台排程按输入快照重算同一方案，在 2～3 台机台间分配整板加工（超单刀上限的机台不可分配），同一机台按板号顺序连续加工，取全部板完成时间最小的分配，原排料结果不变 · 分时电费核算沿用同一排程，每板起止秒数按机台开工时刻换算实际时刻，跨电价边界或午夜按日循环拆分（分段费用 = 功率 × 加工秒数 ÷ 3600 × 电价，逐板四舍五入到分再汇总），修改计价参数只重新核算、不改原排料与排程 · 刀路执行记录按未舍入几何回放矩形切分得到每刀直接前置（所切矩形的产生刀，初始整板无前置），仅当前置刀已完成才可标记完成，不同分支可交错执行，撤销一刀连带撤销其已完成的所有后继刀；记录仅存当前页面并绑定生成方案，重新生成方案即清空，不影响落位、分摊与排程 · 可取件联动：同一回放为每件落位零件记录从整板到其最终料块经过的分离刀序（贴板边无需额外刀，零锯缝也计入实际切刀），分单取件清单在该件全部分离刀已完成时标为「可取」并显示尚缺刀序与每单可取件数 / 总件数，标记或撤销刀路后即时更新，重新生成方案随执行记录清零
       </footer>
     </div>
   );
@@ -1143,12 +1144,20 @@ function ResultView({ result, selected, onToggleDamaged, cutDone, cutHints, onMa
 
       {/* 分单取件 */}
       <h2 className="section-title">分单取件清单</h2>
-      <p className="hint">勾选「补切」列标记损坏件（按订单号 + 零件名 + 件号区分），然后在页面底部生成补切方案。</p>
+      <p className="hint">
+        勾选「补切」列标记损坏件（按订单号 + 零件名 + 件号区分），然后在页面底部生成补切方案。
+        「可取」列与刀路执行记录联动：该件从整板到最终料块的<b>全部分离刀</b>完成后标为「可取」，
+        否则显示尚缺刀序；订单标题处给出可取件数 / 总件数，标记或撤销刀路后即时更新。
+      </p>
       <div className="pick-list">
         {result.pickList.map((pl) => {
           const summary = result.orders.find((o) => o.order === pl.order);
           const boards = summary ? summary.boardIndices : [];
           const crossBoard = boards.length > 1;
+          // 可取件联动：逐件核对分离刀完成情况（随刀路执行记录即时更新）
+          const pickStates = pl.items.map((it) => pickableState(it, cutDone));
+          const pickableCount = pickStates.filter((s) => s.pickable).length;
+          const allPickable = pickableCount === pl.items.length;
           return (
             <div className="pick-order" key={pl.order}>
               <div className="pick-order-head">
@@ -1156,6 +1165,9 @@ function ResultView({ result, selected, onToggleDamaged, cutDone, cutHints, onMa
                 <span className="pick-order-meta">
                   {pl.items.length} 件 · 面积 {fmt(summary && summary.partsArea)} ·
                   材料费 <b>¥{yuan(summary && summary.materialCents)}</b>
+                </span>
+                <span className={`pick-progress${allPickable ? ' all' : ''}`}>
+                  可取 {pickableCount} / {pl.items.length} 件
                 </span>
                 <span className={crossBoard ? 'board-badge cross' : 'board-badge'}>
                   {crossBoard ? `跨 ${boards.length} 板：${boards.join('、')} 号` : `仅 ${boards.join('、')} 号板`}
@@ -1165,13 +1177,14 @@ function ResultView({ result, selected, onToggleDamaged, cutDone, cutHints, onMa
                 <thead>
                   <tr>
                     <th className="sel-col">补切</th><th>零件件号</th><th>所在板号</th><th>位置 x,y</th>
-                    <th>占位 长×宽</th><th>旋转</th>
+                    <th>占位 长×宽</th><th>旋转</th><th>可取状态</th>
                   </tr>
                 </thead>
                 <tbody>
                   {pl.items.map((it, i) => {
                     const key = itemKey(pl.order, it.part, it.index);
                     const checked = selected.has(key);
+                    const ps = pickStates[i];
                     return (
                       <tr key={i}
                         className={`${i > 0 && it.board !== pl.items[i - 1].board ? 'board-start' : ''} ${checked ? 'row-selected' : ''}`}>
@@ -1188,6 +1201,21 @@ function ResultView({ result, selected, onToggleDamaged, cutDone, cutHints, onMa
                         <td>{strip(it.x)}, {strip(it.y)}</td>
                         <td>{strip(it.w)} × {strip(it.h)}</td>
                         <td>{it.rotated ? '是' : '否'}</td>
+                        <td>
+                          {ps.pickable ? (
+                            <span
+                              className="pick-tag ok"
+                              title={(it.sep && it.sep.length)
+                                ? `分离刀 ${it.sep.join('、')} 均已完成`
+                                : '贴板边落位，无需分离刀'}
+                            >可取</span>
+                          ) : (
+                            <span
+                              className="pick-missing"
+                              title={`分离刀共 ${(it.sep || []).length} 刀，完成后可取`}
+                            >尚缺第 {ps.missing.join('、')} 刀</span>
+                          )}
+                        </td>
                       </tr>
                     );
                   })}

@@ -87,6 +87,15 @@
  *  - 每刀的直接前置 = 所切矩形的产生刀（0 表示所切的是初始整板、无前置）；
  *  - 前置关系只是对既有刀路的只读回放，落位、分摊与排程均不受影响；
  *    零锯缝（缝带宽度为 0）、余板尺寸与无刀板同样适用。
+ *
+ * 可取件联动（每件落位 sep 字段）：
+ *  - 与刀路前置同源的未舍入矩形切分回放：初始整板包含全部落位零件，每刀在其当前
+ *    所在矩形内贯穿并扣除实际锯缝带后，该矩形内的零件随所属子块下移，
+ *    该刀记为这些零件的一刀分离刀；
+ *  - 每件落位零件记录从整板到其最终料块所经过的分离刀序（按刀序升序）；
+ *    贴板边（某方向恰好占满）的边本就不产生刀，零锯缝的刀缝带宽度为 0 但仍计入实际切刀；
+ *  - 分离刀序只是对既有刀路的只读回放，落位、分摊与排程均不受影响；
+ *    前端据此在分单取件清单标记「可取」（该件全部分离刀已完成时）并显示尚缺刀序。
  */
 
 const EPS = 1e-9;
@@ -910,6 +919,60 @@ function traceCutPredecessors(boardWidth, boardHeight, cuts) {
 }
 
 /**
+ * 落位零件分离刀序回放（只读计算，不影响落位 / 分摊 / 排程）。
+ * 与刀路前置回放同源：以未舍入几何按现有刀序回放矩形切分——
+ *  - 初始整板包含全部落位零件；每刀在其当前所在矩形内贯穿，扣除实际锯缝带后
+ *    分为两个子块，矩形内的零件随所属子块下移（零件不会跨越锯缝带）；
+ *  - 该刀记为被切矩形内每件零件的一刀分离刀；回放结束后每件零件的分离刀序
+ *    即“从整板到其最终料块”所经过的刀（按刀序升序）；
+ *  - 贴板边（某方向恰好占满）的边本就不产生刀，无需额外刀；零锯缝的刀缝带
+ *    宽度为 0 但仍实际切刀，同样计入分离刀序；无刀板（零件铺满整板）分离刀序为空。
+ * cuts：未舍入刀路（{ type, band }，按刀序排列）；
+ * placements：未舍入落位（{ x, y, w, h }，与 cuts 同板）。
+ * 返回与 placements 等长的数组，元素为该件的分离刀序（刀序从 1 起）。
+ */
+function tracePartSeparations(boardWidth, boardHeight, cuts, placements) {
+  const seps = placements.map(() => []);
+  // 当前矩形集合：{ x, y, w, h, parts }，parts 为该矩形当前包含的落位下标
+  const rects = [{ x: 0, y: 0, w: boardWidth, h: boardHeight, parts: placements.map((_, i) => i) }];
+  const pushRect = (rect) => {
+    if (rect.w > EPS && rect.h > EPS) rects.push(rect);
+  };
+  cuts.forEach((c, ci) => {
+    const band = c.band;
+    const ri = rects.findIndex((r) =>
+      band.x >= r.x - EPS && band.y >= r.y - EPS &&
+      band.x + band.w <= r.x + r.w + EPS && band.y + band.h <= r.y + r.h + EPS
+    );
+    if (ri === -1) return; // 几何上不会发生（刀路与回放同源），兜底跳过
+    const r = rects[ri];
+    rects.splice(ri, 1);
+    // 扣除实际锯缝带后的两个子块（竖切：左 / 右；横切：上 / 下）
+    let sub1;
+    let sub2;
+    if (c.type === 'v') {
+      sub1 = { x: r.x, y: r.y, w: band.x - r.x, h: r.h, parts: [] };
+      sub2 = { x: band.x + band.w, y: r.y, w: r.x + r.w - band.x - band.w, h: r.h, parts: [] };
+    } else {
+      sub1 = { x: r.x, y: r.y, w: r.w, h: band.y - r.y, parts: [] };
+      sub2 = { x: r.x, y: band.y + band.h, w: r.w, h: r.y + r.h - band.y - band.h, parts: [] };
+    }
+    // 被切矩形内的每件零件：本刀是其分离刀，随后随所属子块继续下移
+    for (const pi of r.parts) {
+      seps[pi].push(ci + 1);
+      const p = placements[pi];
+      const inSub1 =
+        p.x >= sub1.x - EPS && p.y >= sub1.y - EPS &&
+        p.x + p.w <= sub1.x + sub1.w + EPS && p.y + p.h <= sub1.y + sub1.h + EPS;
+      (inSub1 ? sub1 : sub2).parts.push(pi);
+    }
+    pushRect(sub1);
+    pushRect(sub2);
+  });
+  return seps;
+}
+
+/**
  * 输出整理：逐板编号、刀路端点、面积统计与逐板材料费分摊（最大余数法），
  * 同时按订单汇总件数 / 面积 / 分摊额 / 所在板号。
  * ordersList：[{ order, seq }]，决定汇总与分摊的订单顺序。
@@ -930,6 +993,8 @@ function summarizeBoards(boards, ordersList) {
   const resultBoards = boards.map((b, bi) => {
     // 刀路执行前置：按现有刀序回放矩形切分，得到每刀的直接前置（0 = 初始整板、无前置）
     const preds = traceCutPredecessors(b.width, b.height, b.cuts);
+    // 可取件联动：同一回放记录每件落位零件从整板到其最终料块所经过的分离刀序
+    const seps = tracePartSeparations(b.width, b.height, b.cuts, b.placements);
     const cuts = b.cuts.map((c, i) => {
       const seq = i + 1;
       const pred = preds[i] < 0 ? 0 : preds[i] + 1;
@@ -980,7 +1045,7 @@ function summarizeBoards(boards, ordersList) {
       width: round3(b.width),
       height: round3(b.height),
       longestCut: cuts.length ? round3(Math.max(...cuts.map((c) => c.length))) : 0,
-      placements: b.placements.map((p) => ({
+      placements: b.placements.map((p, pi) => ({
         order: p.order,
         part: p.part,
         index: p.index,
@@ -989,6 +1054,7 @@ function summarizeBoards(boards, ordersList) {
         w: round3(p.w),
         h: round3(p.h),
         rotated: p.rotated,
+        sep: seps[pi],
         ...(p.srcBoard !== undefined ? { srcBoard: p.srcBoard } : {}),
       })),
       cuts,
@@ -1042,7 +1108,8 @@ function cutBoards(input) {
   // 可回收余料清单：只读提取各板最终空闲矩形，不影响落位与分摊
   const { offcuts, offcutArea } = collectOffcuts(boards, minOffcutLength, minOffcutWidth);
 
-  // 分单取件清单：按订单输入顺序，件内按零件行 / 件号（即切割输入顺序）
+  // 分单取件清单：按订单输入顺序，件内按零件行 / 件号（即切割输入顺序）；
+  // 每件附分离刀序 sep（从整板到其最终料块经过的刀），供前端与刀路执行记录联动
   const pickList = [...orderSummary.values()].map((summary) => {
     const items = [];
     for (const b of resultBoards) {
@@ -1057,6 +1124,7 @@ function cutBoards(input) {
             w: p.w,
             h: p.h,
             rotated: p.rotated,
+            sep: p.sep,
           });
         }
       }

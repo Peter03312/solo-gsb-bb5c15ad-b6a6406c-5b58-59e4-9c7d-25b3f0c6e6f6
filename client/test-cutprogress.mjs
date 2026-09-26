@@ -1,6 +1,6 @@
-/* 刀路执行记录（纯函数）自检：标记 / 越序提示 / 重复标记 / 级联撤销 / 分支交错 */
+/* 刀路执行记录（纯函数）自检：标记 / 越序提示 / 重复标记 / 级联撤销 / 分支交错 / 可取件联动 */
 import assert from 'node:assert';
-import { cutStatus, markCut, undoCut } from './src/cutProgress.js';
+import { cutStatus, markCut, undoCut, pickableState } from './src/cutProgress.js';
 
 // 刀路样例（pred 来自后端回放）：
 //   1(无前置) → 2 → 4；1 → 3；另 5(无前置) 独立分支
@@ -56,5 +56,20 @@ assert.strictEqual(next.size, 0);
 // 无刀板：空刀路下状态为空、操作安全
 assert.deepStrictEqual(cutStatus([], new Set()), {});
 assert.strictEqual(markCut([], new Set(), 1).missing, 0);
+
+// ---- 可取件联动：全部分离刀完成才可取，尚缺刀序按刀序升序列出 ----
+// 尚缺分离刀：列出未完成的刀序，不可取
+let ps = pickableState({ board: 1, sep: [1, 2] }, { 1: new Set([1]) });
+assert.deepStrictEqual(ps, { missing: [2], pickable: false });
+// 全部分离刀完成：可取，无尚缺刀序
+ps = pickableState({ board: 1, sep: [1, 2] }, { 1: new Set([1, 2]) });
+assert.deepStrictEqual(ps, { missing: [], pickable: true });
+// 跨板取件：按所在板号查完成记录，互不影响
+ps = pickableState({ board: 2, sep: [1, 3] }, { 1: new Set([1, 3]) });
+assert.deepStrictEqual(ps, { missing: [1, 3], pickable: false });
+// 贴板边无需额外刀：空分离刀序直接可取（无需任何完成记录）
+assert.strictEqual(pickableState({ board: 9, sep: [] }, {}).pickable, true);
+// sep 缺失（旧数据兜底）按无分离刀处理
+assert.strictEqual(pickableState({ board: 1 }, {}).pickable, true);
 
 console.log('刀路执行记录自检通过 ✔');

@@ -1378,4 +1378,47 @@ assert.strictEqual(predK3.totalMaterialCents, predK3.standardBoardsCount * 1000)
 assert.strictEqual(predK3.boards[0].cost.shares.reduce((s, x) => s + x.cents, 0),
   predK3.boards[0].cost.priceCents);
 
+// 63) 落位零件分离刀序（sep）：与刀路前置同源的矩形切分回放，
+// 记录每件零件从整板到其最终料块所经过的分离刀序（可取件联动）
+// 2×2 网格（零锯缝）：角上两件经竖切 + 所在条横切分离，零锯缝的刀同样计入
+const sepGrid = cutBoards({
+  boardWidth: 1200, boardHeight: 800, kerf: 0,
+  parts: [{ name: '块', width: 600, height: 400, quantity: 4 }],
+});
+assert.deepStrictEqual(sepGrid.boards[0].placements.map((p) => p.sep),
+  [[1, 2], [1, 2], [1, 3], [1, 3]], '零锯缝的分离刀也要计入');
+// 分单取件清单逐项携带分离刀序（供前端与刀路执行记录联动）
+assert.deepStrictEqual(sepGrid.pickList[0].items.map((it) => it.sep),
+  [[1, 2], [1, 2], [1, 3], [1, 3]]);
+// 贴板边占满整板：无需任何分离刀，sep 为空（生成即可取）
+const sepFull = cutBoards({
+  boardWidth: 1000, boardHeight: 600, kerf: 2,
+  parts: [{ name: '整板', width: 1000, height: 600, quantity: 1 }],
+});
+assert.deepStrictEqual(sepFull.boards[0].placements[0].sep, []);
+// 贴板边无需额外刀：右侧件贴右板边，只需与左件分离的一刀
+const sepEdge = cutBoards({
+  boardWidth: 1203, boardHeight: 400, kerf: 3,
+  parts: [{ name: '条', width: 600, height: 400, quantity: 2 }],
+});
+assert.deepStrictEqual(sepEdge.boards[0].placements.map((p) => p.sep), [[1], [1]]);
+// 余板尺寸同样适用：余板上的落位按余板实际尺寸回放分离刀序
+assert.deepStrictEqual(predStock.boards[0].placements.map((p) => p.sep), [[1, 2], [1, 3, 4]]);
+assert.deepStrictEqual(predStock.boards[1].placements.map((p) => p.sep), [[1, 2]]);
+// 分离刀链与前置回放一致：每件的首刀所切为初始整板（pred 0），
+// 后续每刀的直接前置恰为链上上一刀（沿前置关系直达整板）；刀序严格递增
+for (const b of predK3.boards) {
+  for (const p of b.placements) {
+    p.sep.forEach((seq, k) => {
+      assert.strictEqual(seq >= 1 && seq <= b.cuts.length, true, '分离刀序应指向本板实际刀路');
+      if (k > 0) assert.strictEqual(seq > p.sep[k - 1], true, '分离刀序应按刀序升序');
+      assert.strictEqual(b.cuts[seq - 1].pred, k === 0 ? 0 : p.sep[k - 1],
+        '分离刀链应沿前置关系直达整板');
+    });
+  }
+}
+// 分离刀序不改动既有输出：落位、分摊与材料费保持原样（仅新增 sep 字段）
+assert.strictEqual(sepGrid.totalParts, 4);
+assert.strictEqual(predK3.totalMaterialCents, predK3.standardBoardsCount * 1000);
+
 console.log('全部算法自检通过 ✔');
