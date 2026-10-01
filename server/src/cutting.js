@@ -81,12 +81,15 @@
  *  - 分段费用 = 功率 × 加工秒数 ÷ 3600 × 电价；每板费用四舍五入到分后再汇总；
  *  - 输出逐板用电量与电费、逐机台电费与总电费；只改计价参数即可重新核算，不改变排料与排程。
  *
- * 刀路执行前置（每刀 pred 字段）：
+ * 刀路执行前置与零件分离刀序（每刀 pred 字段、落位 releaseCuts 字段）：
  *  - 排料结束后，对每张板用未舍入几何按现有刀序回放矩形切分：初始为整板（无前置），
  *    每刀在其当前所在矩形内贯穿，扣除该刀实际锯缝带后，剩余矩形记为由该刀产生；
  *  - 每刀的直接前置 = 所切矩形的产生刀（0 表示所切的是初始整板、无前置）；
- *  - 前置关系只是对既有刀路的只读回放，落位、分摊与排程均不受影响；
- *    零锯缝（缝带宽度为 0）、余板尺寸与无刀板同样适用。
+ *  - 回放结束后，每个落位零件的最终料块必为某个剩余矩形（贴板边方向不产生刀，
+ *    因而无需额外切刀；零锯缝时缝带宽度为 0，实际切刀仍计入），沿其产生刀逐级
+ *    回溯到初始整板，即得到该零件从整板分离所经过的全部刀序（releaseCuts）；
+ *  - 前置关系与分离刀序都只是对既有刀路的只读回放，落位、分摊与排程均不受影响；
+ *    零锯缝、余板尺寸与无刀板同样适用（无刀板 / 整板单件的 releaseCuts 为空数组）。
  */
 
 const EPS = 1e-9;
@@ -871,23 +874,28 @@ function collectOffcuts(boards, minLength, minWidth) {
 }
 
 /**
- * 刀路执行前置关系回放（只读计算，不影响落位 / 分摊 / 排程）。
+ * 刀路回放（只读计算，不影响落位 / 分摊 / 排程）。
  * 以未舍入几何按现有刀序回放矩形切分：
  *  - 初始为整板矩形（无产生刀）；每刀的锯缝带严格位于某个当前矩形内部
  *    （法向坐标落在矩形内部，全部当前矩形中唯一被包含）；
  *  - 该刀的直接前置 = 所切矩形的产生刀；初始整板无前置（返回 -1）；
  *  - 回放时从所切矩形中扣除该刀的实际锯缝带（边修刀缝带可能窄于标准锯缝、
- *    零锯缝时缝带宽度为 0），剩余矩形记为由该刀产生，供后续刀查找所属。
+ *    零锯缝时缝带宽度为 0），剩余矩形记为由该刀产生，供后续刀查找所属；
+ *  - 回放结束后仍剩余的矩形即最终料块（含每个落位零件的最终料块），
+ *    每个料块记录其产生刀链。
  * cuts：未舍入的刀路数组（{ type, band }，按刀序排列）。
- * 返回与 cuts 等长的数组，元素为直接前置刀在 cuts 中的下标（-1 表示无前置）。
+ * 返回 { preds, leaves }：
+ *  - preds：与 cuts 等长，元素为直接前置刀在 cuts 中的下标（-1 表示无前置）；
+ *  - leaves：回放结束后剩余的矩形 { x, y, w, h, by }，by 为产生该料块的刀下标
+ *    （-1 = 初始整板，即无刀板 / 整板单件）。
  */
-function traceCutPredecessors(boardWidth, boardHeight, cuts) {
+function replayCutTree(boardWidth, boardHeight, cuts) {
   // 当前矩形集合：{ x, y, w, h, by }，by = 产生该矩形的刀下标（-1 = 初始整板）
   const rects = [{ x: 0, y: 0, w: boardWidth, h: boardHeight, by: -1 }];
   const pushRect = (rect) => {
     if (rect.w > EPS && rect.h > EPS) rects.push(rect);
   };
-  return cuts.map((c, ci) => {
+  const preds = cuts.map((c, ci) => {
     const band = c.band;
     const ri = rects.findIndex((r) =>
       band.x >= r.x - EPS && band.y >= r.y - EPS &&
@@ -907,6 +915,53 @@ function traceCutPredecessors(boardWidth, boardHeight, cuts) {
     }
     return r.by;
   });
+  return { preds, leaves: rects };
+}
+
+/**
+ * 刀路执行前置关系回放（replayCutTree 的兼容封装）。
+ * 返回与 cuts 等长的数组，元素为直接前置刀在 cuts 中的下标（-1 表示无前置）。
+ */
+function traceCutPredecessors(boardWidth, boardHeight, cuts) {
+  return replayCutTree(boardWidth, boardHeight, cuts).preds;
+}
+
+/**
+ * 落位零件的分离刀序：从整板到该零件最终料块所经过的全部刀序（只读回放）。
+ *  - 零件料块是回放结束后的某个剩余矩形：以未舍入落位矩形在 leaves 中定位
+ *    （贴板边方向不产生刀，故该方向无需额外切刀；料块与回放同源，坐标严格一致，
+ *    用小容差吸收浮点尾差，找不到严格匹配时退化为“包含该件且面积不小于零件”的
+ *    最小剩余矩形兜底）；
+ *  - 沿料块的产生刀逐级回溯直接前置到初始整板，回溯链上的刀即分离刀
+ *    （零锯缝时缝带宽度为 0，实际切刀仍在链中，照样计入）；
+ *  - 刀序按升序返回（直接前置序号恒小于本刀，回溯链天然严格递减）；
+ *    无刀板 / 整板恰好被单件占满时料块即初始整板（by = -1），返回空数组。
+ */
+function traceReleaseCuts(leaves, preds, p) {
+  const same = (a, b) => Math.abs(a - b) <= EPS;
+  let leaf = leaves.find((r) =>
+    same(r.x, p.x) && same(r.y, p.y) && same(r.w, p.w) && same(r.h, p.h)
+  );
+  if (!leaf) {
+    // 兜底：包含零件落位矩形、且面积不小于零件面积的最小剩余矩形
+    const cx = p.x + p.w / 2;
+    const cy = p.y + p.h / 2;
+    const candidates = leaves.filter((r) =>
+      cx >= r.x - EPS && cy >= r.y - EPS &&
+      cx <= r.x + r.w + EPS && cy <= r.y + r.h + EPS &&
+      r.w * r.h >= p.w * p.h - EPS
+    );
+    candidates.sort((a, b) => a.w * a.h - b.w * b.h);
+    leaf = candidates[0];
+  }
+  if (!leaf || leaf.by < 0) return [];
+  const chain = [];
+  let by = leaf.by;
+  while (by >= 0) {
+    chain.push(by);
+    by = preds[by];
+  }
+  return chain.reverse().map((i) => i + 1);
 }
 
 /**
@@ -928,8 +983,9 @@ function summarizeBoards(boards, ordersList) {
   });
 
   const resultBoards = boards.map((b, bi) => {
-    // 刀路执行前置：按现有刀序回放矩形切分，得到每刀的直接前置（0 = 初始整板、无前置）
-    const preds = traceCutPredecessors(b.width, b.height, b.cuts);
+    // 刀路回放（未舍入几何）：按现有刀序回放矩形切分，同时得到每刀的直接前置
+    // （0 = 初始整板、无前置）与回放结束后的最终料块（用于各零件的分离刀序）
+    const { preds, leaves } = replayCutTree(b.width, b.height, b.cuts);
     const cuts = b.cuts.map((c, i) => {
       const seq = i + 1;
       const pred = preds[i] < 0 ? 0 : preds[i] + 1;
@@ -989,6 +1045,9 @@ function summarizeBoards(boards, ordersList) {
         w: round3(p.w),
         h: round3(p.h),
         rotated: p.rotated,
+        // 从整板到该零件最终料块所经过的分离刀序（贴板边不产生刀、零锯缝切刀仍计入；
+        // 用未舍入落位定位料块，刀序为输出的 1 基序号）
+        releaseCuts: traceReleaseCuts(leaves, preds, p),
         ...(p.srcBoard !== undefined ? { srcBoard: p.srcBoard } : {}),
       })),
       cuts,
@@ -1057,6 +1116,8 @@ function cutBoards(input) {
             w: p.w,
             h: p.h,
             rotated: p.rotated,
+            // 该件从整板分离所需的全部刀序：前端据此与刀路执行记录联动判断“可取”
+            releaseCuts: p.releaseCuts,
           });
         }
       }
@@ -1271,6 +1332,7 @@ function recutBoards(input) {
         w: p.w,
         h: p.h,
         rotated: p.rotated,
+        releaseCuts: p.releaseCuts,
       });
     }
   }

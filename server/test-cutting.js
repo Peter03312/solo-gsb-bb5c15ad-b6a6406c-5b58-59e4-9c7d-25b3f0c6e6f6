@@ -1378,4 +1378,104 @@ assert.strictEqual(predK3.totalMaterialCents, predK3.standardBoardsCount * 1000)
 assert.strictEqual(predK3.boards[0].cost.shares.reduce((s, x) => s + x.cents, 0),
   predK3.boards[0].cost.priceCents);
 
+// 63) 零件分离刀序（releaseCuts）：从整板到零件最终料块所经过的全部刀序
+// 2×2 网格（零锯缝）：左列两件经第 1（竖切）、2（横切）刀分离；右列两件经第 1、3 刀
+const relGrid = cutBoards({
+  boardWidth: 1200, boardHeight: 800, kerf: 0,
+  parts: [{ name: '块', width: 600, height: 400, quantity: 4 }],
+});
+const rgb = relGrid.boards[0];
+assert.deepStrictEqual(rgb.placements.map((p) => [p.x, p.y, p.releaseCuts]), [
+  [0, 0, [1, 2]],
+  [0, 400, [1, 2]],
+  [600, 0, [1, 3]],
+  [600, 400, [1, 3]],
+]);
+// 分单取件清单逐件携带分离刀序
+assert.deepStrictEqual(relGrid.pickList[0].items.map((it) => it.releaseCuts),
+  [[1, 2], [1, 2], [1, 3], [1, 3]]);
+// 无刀板（零件恰好占满整板）：贴板边无需额外刀，分离刀序为空（立即可取）
+const relFull = cutBoards({
+  boardWidth: 1000, boardHeight: 600, kerf: 2,
+  parts: [{ name: '整板', width: 1000, height: 600, quantity: 1 }],
+});
+assert.deepStrictEqual(relFull.boards[0].placements[0].releaseCuts, []);
+assert.deepStrictEqual(relFull.pickList[0].items[0].releaseCuts, []);
+// 贴板边的一刀把整板一分为二：零锯缝 / 边修刀都是实际切刀，两件都需经第 1 刀分离；
+// 锯缝为 0 时刀仍计入分离刀序
+const relK0 = cutBoards({
+  boardWidth: 1000, boardHeight: 500, kerf: 0,
+  parts: [{ name: 'A', width: 400, height: 300, quantity: 2 }],
+});
+for (const p of relK0.boards[0].placements) {
+  assert.ok(p.releaseCuts.includes(1), '零锯缝切刀仍应计入分离刀序');
+  for (let i = 1; i < p.releaseCuts.length; i++) {
+    assert(p.releaseCuts[i] > p.releaseCuts[i - 1], '分离刀序必须按刀序升序');
+  }
+}
+// 带锯缝、余板与跨板复杂方案的通用不变量：
+//  - 分离刀序均为合法刀序且严格升序；末刀沿直接前置回溯恰为整条分离刀序；
+//  - 每刀都由某次落料产生，因此全板分离刀序的并集 = 全部刀序；
+//  - 无刀板的全部落位分离刀序为空。
+const relComplex = cutBoards({
+  boardWidth: 2440, boardHeight: 1220, kerf: 3, boardPrice: 180,
+  stockBoards: [{ id: 'YB-01', width: 1200, height: 800 }],
+  orders: [
+    { orderNo: 'SO-1', parts: [
+      { name: '柜门', width: 600, height: 400, quantity: 6 },
+      { name: '横条', width: 1000, height: 280, quantity: 2 }, // 会旋转落位
+    ] },
+    { orderNo: 'SO-2', parts: [
+      { name: '柜门', width: 600, height: 400, quantity: 3 },
+      { name: '背板条', width: 1000, height: 120, quantity: 2 },
+    ] },
+  ],
+});
+for (const b of relComplex.boards) {
+  const predOf = new Map(b.cuts.map((c) => [c.seq, c.pred]));
+  const union = new Set();
+  for (const p of b.placements) {
+    const rel = p.releaseCuts;
+    assert(Array.isArray(rel), '分离刀序应为数组');
+    for (let i = 0; i < rel.length; i++) {
+      assert(Number.isInteger(rel[i]) && rel[i] >= 1 && rel[i] <= b.cuts.length,
+        `板 ${b.index} 分离刀序越界：${rel.join('、')}`);
+      if (i > 0) assert(rel[i] > rel[i - 1], '分离刀序必须严格升序');
+      union.add(rel[i]);
+    }
+    // 从末刀沿直接前置回溯到整板，经过的刀序恰为分离刀序（逆序）
+    const chain = [];
+    let cur = rel.length ? rel[rel.length - 1] : 0;
+    while (cur > 0) {
+      chain.push(cur);
+      cur = predOf.get(cur);
+    }
+    assert.deepStrictEqual(chain.reverse(), rel,
+      `板 ${b.index} 零件 ${p.part}#${p.index} 分离刀序与前置链不一致`);
+  }
+  if (b.cuts.length === 0) {
+    assert.strictEqual(b.placements.every((p) => p.releaseCuts.length === 0), true);
+  } else {
+    assert.strictEqual(union.size, b.cuts.length,
+      `板 ${b.index} 全部分离刀序的并集应等于全部刀路（每刀都为某次落料产生）`);
+  }
+}
+// 补切清单逐件同样携带补切板上的分离刀序（补切板结构与普通板一致）
+const relRecut = recutBoards({
+  boardWidth: 1200, boardHeight: 800, kerf: 0, boardPrice: 10,
+  orders: [{ orderNo: 'A', parts: [{ name: '块', width: 600, height: 400, quantity: 5 }] }],
+  damaged: [
+    { order: 'A', part: '块', index: 1 },
+    { order: 'A', part: '块', index: 3 },
+  ],
+});
+assert.strictEqual(relRecut.recut.items.length, 2);
+for (const it of relRecut.recut.items) {
+  assert(Array.isArray(it.releaseCuts), '补切清单应携带分离刀序');
+  const board = relRecut.recut.boards.find((b) => b.index === it.board);
+  const placement = board.placements.find((p) => p.order === it.order && p.part === it.part && p.index === it.index);
+  assert.deepStrictEqual(it.releaseCuts, placement.releaseCuts, '补切清单分离刀序应与补切板落位一致');
+  for (const s of it.releaseCuts) assert(s >= 1 && s <= board.cuts.length);
+}
+
 console.log('全部算法自检通过 ✔');

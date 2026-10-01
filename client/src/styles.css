@@ -452,6 +452,43 @@ summary { cursor: pointer; font-size: 13px; color: var(--blue); }
 }
 .board-badge.cross { background: #fffbeb; border-color: #f59e0b; color: #b45309; font-weight: 600; }
 .pick-table tr.board-start td { border-top: 2px solid #cbd5e1; }
+
+/* 可取件联动（与刀路执行记录联动的取件状态） */
+.pick-ready-badge {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  color: #475569;
+  font-variant-numeric: tabular-nums;
+}
+.pick-ready-badge.all {
+  background: #ecfdf5;
+  border-color: #34d399;
+  color: #047857;
+}
+.pick-tag {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.pick-tag.ready {
+  background: #dcfce7;
+  border: 1px solid #34d399;
+  color: #15803d;
+  font-weight: 700;
+}
+.pick-tag.waiting {
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  color: #64748b;
+}
+.pick-table tr.pickable-row td { background: #f6fef9; }
+.pick-table tr.pickable-row.row-selected td { background: #ecfdf5; }
 .board-num {
   display: inline-block;
   min-width: 20px;

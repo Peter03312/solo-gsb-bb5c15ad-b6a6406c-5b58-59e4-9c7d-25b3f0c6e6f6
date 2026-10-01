@@ -75,3 +75,42 @@ export function undoCut(cuts, done, seq) {
   }
   return next;
 }
+
+const EMPTY_DONE = new Set();
+
+/**
+ * 可取件联动（纯函数）：
+ *  - 每件落位带 releaseCuts（后端按未舍入矩形切分回放得到的分离刀序，即从整板到
+ *    该件最终料块所经过的全部刀序；贴板边不产生刀、零锯缝切刀仍计入，故可能为空）；
+ *  - 仅当该件全部分离刀都已完成时才“可取”（无分离刀的整板单件恒为可取）；
+ *  - 取件状态只依赖页面本地的刀路执行记录（{ 板号: Set(已完成刀序) }），
+ *    标记 / 撤销后即时更新，重新生成方案时随执行记录一起清零。
+ */
+
+/** 某件是否可取：releaseCuts 中每一刀（均在其所在板上）都已完成。 */
+export function isItemPickable(releaseCuts, doneSet) {
+  const done = doneSet || EMPTY_DONE;
+  return (releaseCuts || []).every((seq) => done.has(seq));
+}
+
+/** 某件尚缺的分离刀序（未完成的刀序，按后端给出的升序返回）；为空即已可取。 */
+export function itemMissingCuts(releaseCuts, doneSet) {
+  const done = doneSet || EMPTY_DONE;
+  return (releaseCuts || []).filter((seq) => !done.has(seq));
+}
+
+/**
+ * 一张订单的可取件数 / 总件数。
+ * items：分单取件清单中该订单的件列表（每项含 board 与 releaseCuts）；
+ * doneByBoard：{ 板号: Set(已完成刀序) }（刀路执行记录）。
+ * 返回 { ready, total }。
+ */
+export function orderPickStats(items, doneByBoard) {
+  let ready = 0;
+  for (const it of items) {
+    if (isItemPickable(it.releaseCuts, doneByBoard ? doneByBoard[it.board] : EMPTY_DONE)) {
+      ready += 1;
+    }
+  }
+  return { ready, total: items.length };
+}
